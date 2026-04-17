@@ -250,7 +250,7 @@ Quest 3 connects over Wi-Fi. The server must run on the **same network** as the 
 
 ---
 
-### For the Input Layer team
+### For the Input Layer
 
 Your job: poll `/state` every 500 ms and switch interaction modes accordingly.
 
@@ -310,7 +310,7 @@ public class InputLayerController : MonoBehaviour
 
 ---
 
-### For the Experience Layer team
+### For the Experience Layer
 
 Your job: call `/ask` when the visitor asks a question, then update the scene.
 
