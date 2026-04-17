@@ -233,6 +233,200 @@ Expected: `mode = "XR_MENU"`, `answer = ""`, `audio_url = ""`.
 
 ---
 
+## Unity Integration Guide (Quest 3)
+
+### Network setup
+
+Quest 3 connects over Wi-Fi. The server must run on the **same network** as the headset.
+
+1. Find your computer's local IP:
+   ```bash
+   # macOS
+   ipconfig getifaddr en0
+   # Example output: 192.168.1.42
+   ```
+2. In your Unity scripts, set the base URL to `http://192.168.1.42:8000`  
+   (never use `localhost` — that points to inside the headset)
+
+---
+
+### For the Input Layer team
+
+Your job: poll `/state` every 500 ms and switch interaction modes accordingly.
+
+| Condition | Switch to |
+|---|---|
+| `hands.both_holding == true` | Eye tracking / head gaze mode (hands are occupied) |
+| `noise.level == "noisy"` | Suppress voice input, use gaze/head only |
+| `noise.level == "moderate"` | Voice input optional |
+| `noise.level == "quiet"` + `both_holding == false` | Full voice input enabled |
+
+```csharp
+// InputLayerController.cs
+using System.Collections;
+using UnityEngine;
+using UnityEngine.Networking;
+
+public class InputLayerController : MonoBehaviour
+{
+    private const string SERVER = "http://192.168.1.42:8000";
+
+    void Start() => StartCoroutine(PollState());
+
+    IEnumerator PollState()
+    {
+        while (true)
+        {
+            using var req = UnityWebRequest.Get($"{SERVER}/state");
+            yield return req.SendWebRequest();
+
+            if (req.result == UnityWebRequest.Result.Success)
+            {
+                var state = JsonUtility.FromJson<StateResponse>(req.downloadHandler.text);
+                UpdateInputMode(state);
+            }
+
+            yield return new WaitForSeconds(0.5f);
+        }
+    }
+
+    void UpdateInputMode(StateResponse state)
+    {
+        if (state.hands.both_holding)
+        {
+            // Switch to eye / head gaze interaction
+        }
+        else if (state.noise.level == "noisy")
+        {
+            // Disable voice, use gaze only
+        }
+        else
+        {
+            // Full voice input
+        }
+    }
+}
+```
+
+---
+
+### For the Experience Layer team
+
+Your job: call `/ask` when the visitor asks a question, then update the scene.
+
+```csharp
+// ExperienceLayerController.cs
+using System.Collections;
+using System.Text;
+using UnityEngine;
+using UnityEngine.Networking;
+
+public class ExperienceLayerController : MonoBehaviour
+{
+    private const string SERVER = "http://192.168.1.42:8000";
+
+    // Call this when the visitor asks a question
+    public void OnVisitorQuestion(string question, string crowdLevel, string noiseLevel, bool bothHolding)
+    {
+        StartCoroutine(AskServer(question, crowdLevel, noiseLevel, bothHolding));
+    }
+
+    IEnumerator AskServer(string question, string crowd, string noise, bool bothHolding)
+    {
+        var body = new AskRequest
+        {
+            question = question,
+            state = new AskState
+            {
+                crowd = crowd,
+                noise = noise,
+                detected = true,
+                both_holding = bothHolding
+            }
+        };
+
+        string json = JsonUtility.ToJson(body);
+        using var req = new UnityWebRequest($"{SERVER}/ask", "POST");
+        req.uploadHandler   = new UploadHandlerRaw(Encoding.UTF8.GetBytes(json));
+        req.downloadHandler = new DownloadHandlerBuffer();
+        req.SetRequestHeader("Content-Type", "application/json");
+
+        yield return req.SendWebRequest();
+
+        if (req.result == UnityWebRequest.Result.Success)
+        {
+            var resp = JsonUtility.FromJson<AskResponse>(req.downloadHandler.text);
+            HandleResponse(resp);
+        }
+    }
+
+    void HandleResponse(AskResponse resp)
+    {
+        switch (resp.mode)
+        {
+            case "FULL_VOICE":
+                ShowFullOverlay(resp.answer);
+                if (!string.IsNullOrEmpty(resp.audio_url))
+                    StartCoroutine(PlayAudio($"{SERVER}{resp.audio_url}"));
+                break;
+
+            case "BRIEF_TEXT":
+                ShowBriefText(resp.answer);   // short text only, no audio
+                break;
+
+            case "XR_MENU":
+                ShowXRMenu();                 // ignore answer and audio
+                break;
+        }
+    }
+
+    IEnumerator PlayAudio(string url)
+    {
+        using var req = UnityWebRequestMultimedia.GetAudioClip(url, AudioType.MPEG);
+        yield return req.SendWebRequest();
+
+        if (req.result == UnityWebRequest.Result.Success)
+        {
+            var clip = DownloadHandlerAudioClip.GetContent(req);
+            var source = GetComponent<AudioSource>();
+            source.clip = clip;
+            source.Play();
+        }
+    }
+
+    void ShowFullOverlay(string text) { /* update your UI panel */ }
+    void ShowBriefText(string text)   { /* update your UI panel */ }
+    void ShowXRMenu()                 { /* activate your XR menu GameObject */ }
+}
+```
+
+---
+
+### Data classes (paste into a separate file `ContextARModels.cs`)
+
+```csharp
+// ContextARModels.cs
+using System;
+
+[Serializable] public class HandState   { public bool detected; public bool both_holding; }
+[Serializable] public class CrowdState  { public int count; public string level; }
+[Serializable] public class NoiseState  { public float db; public string level; }
+[Serializable] public class StateResponse
+{
+    public float     timestamp;
+    public HandState hands;
+    public CrowdState crowd;
+    public NoiseState noise;
+    public string    suggestion;
+}
+
+[Serializable] public class AskState   { public string crowd; public string noise; public bool detected; public bool both_holding; }
+[Serializable] public class AskRequest { public string question; public string image_base64; public AskState state; }
+[Serializable] public class AskResponse{ public string mode; public string answer; public string audio_url; public string exhibit; }
+```
+
+---
+
 ## Context Routing Logic
 
 The decision is made in `context_router._decide_mode()`:
