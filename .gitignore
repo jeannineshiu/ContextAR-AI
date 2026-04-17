@@ -1,0 +1,33 @@
+# Environment — contains API keys, NEVER commit
+.env
+
+# FAISS index — generated locally from exhibits_data.py
+faiss_index/
+
+# YOLO weights — auto-downloaded by ultralytics on first run
+yolov8n.pt
+*.pt
+
+# Generated TTS audio files
+static/audio/*.mp3
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# macOS
+.DS_Store
+
+# VSCode
+.vscode/
+
+# Claude Code session files
+.claude/
