@@ -3,9 +3,12 @@
 FastAPI backend for the XR museum companion system.  
 Exhibition: **Western European Paintings, 15th–20th Century** — Metropolitan Museum of Art.
 
-The backend fuses three real-time sensor streams (hand pose, crowd density, ambient noise)
-into a single context state, then answers visitor questions with the appropriate response
-mode: full voice guide, brief text, or XR menu overlay.
+The backend receives visitor context (gaze duration, crowd density, ambient noise) from Unity on-device sensing, identifies the exhibit from a camera frame, retrieves relevant knowledge via RAG, and returns a mode decision with a length-appropriate text answer.
+
+> **Architecture note (updated 2026-04):**  
+> All on-device sensing (crowd detection, noise classification, gaze tracking) has been moved to Unity.  
+> The server now acts as a pure QA + routing service — no sensors, no background threads, no audio generation.  
+> Audio is handled by Meta TTS on the headset side.
 
 ---
 
@@ -15,31 +18,20 @@ mode: full voice guide, brief text, or XR menu overlay.
 XRCC_project/
 │
 ├── server.py               # FastAPI app — main entry point for Unity
-├── qa_pipeline.py          # Coordinates all four modules in order
-├── context_router.py       # Decides FULL_VOICE / BRIEF_TEXT / XR_MENU
-├── rag_engine.py           # RAG: FAISS vector store + GPT-4o answers
+├── qa_pipeline.py          # Coordinates all modules in order
+├── context_router.py       # Decides response mode from gaze_duration + crowd + noise
+├── rag_engine.py           # RAG: FAISS vector store + GPT-4o, mode-specific prompts
 ├── exhibit_recognizer.py   # GPT-4o Vision: identify painting from camera frame
-├── exhibits_data.py        # Museum knowledge base (6 Met paintings)
-├── hand_detector.py        # MediaPipe: detect hand grip state
-├── crowd_detector.py       # YOLOv8n: count people in frame
-├── noise_detector.py       # Microphone: classify ambient noise level
-├── tts_engine.py           # Text-to-speech (gTTS / ElevenLabs)
+├── exhibits_data.py        # Museum knowledge base (6 Met paintings, 5 sections each)
 │
-├── tests/                  # Pytest test suite (300 unit tests)
+├── tests/                  # Pytest test suite
 │   ├── test_server.py
 │   ├── test_qa_pipeline.py
 │   ├── test_router.py
 │   ├── test_exhibit_recognizer.py
 │   ├── test_rag_engine.py
 │   ├── test_exhibits_data.py
-│   ├── test_hand_detector.py
-│   ├── test_crowd_detector.py
-│   ├── test_noise_detector.py
-│   ├── test_tts_engine.py
-│   └── test_hardware.py    # Real camera + microphone tests (opt-in)
-│
-├── static/
-│   └── audio/              # TTS .mp3 files served to Unity via /audio/<file>
+│   └── test_hardware.py    # Real camera tests (opt-in)
 │
 ├── conftest.py             # pytest config (hardware marker)
 ├── requirements.txt
@@ -49,7 +41,6 @@ XRCC_project/
 
 **Not in the repo (generated locally):**
 - `faiss_index/` — built on first run from `exhibits_data.py`
-- `yolov8n.pt` — auto-downloaded by ultralytics on first run
 - `.env` — your API keys (never commit this)
 
 ---
@@ -80,8 +71,8 @@ cp .env.example .env
 python rag_engine.py --build
 ```
 
-This reads `exhibits_data.py`, calls OpenAI Embeddings, and saves the index to `faiss_index/`.
-Takes ~10 seconds. Only needed once, or when `exhibits_data.py` is updated.
+This reads `exhibits_data.py`, calls OpenAI Embeddings, and saves the index to `faiss_index/`.  
+Takes ~10 seconds. Must be re-run whenever `exhibits_data.py` is updated.
 
 ### 4. Start the server
 
@@ -111,50 +102,9 @@ Health check. Unity can poll this to confirm the server is up.
 
 ---
 
-### `GET /state`
-
-Returns the latest fused sensor state.  
-Unity can call this periodically (e.g. every 500 ms) to update the interaction layer.
-
-**Response:**
-```json
-{
-  "timestamp": 1700000000.0,
-  "hands": {
-    "detected": true,
-    "both_holding": false,
-    "per_hand": ["free"]
-  },
-  "crowd": {
-    "count": 2,
-    "level": "low"
-  },
-  "noise": {
-    "db": -38.5,
-    "level": "quiet",
-    "centroid_hz": 620.3
-  },
-  "suggestion": "full_ui"
-}
-```
-
-**Field guide:**
-
-| Field | Values | Notes |
-|---|---|---|
-| `hands.detected` | `true / false` | Any hand visible in frame |
-| `hands.both_holding` | `true / false` | Both hands gripping something |
-| `hands.per_hand` | `["holding", "free"]` | One entry per detected hand |
-| `crowd.level` | `"low" / "moderate" / "crowded"` | Based on person count |
-| `noise.level` | `"quiet" / "moderate" / "noisy"` | Based on dBFS |
-| `suggestion` | `"full_ui" / "minimal_ui" / "show_overlay"` | High-level hint for the AR layer |
-
----
-
 ### `POST /ask`
 
-Main QA endpoint. Unity sends the visitor's question and current sensor state,
-receives a mode decision, text answer, and optional audio URL.
+Main QA endpoint. Unity sends the visitor's question, current sensor state (measured on-device), and an optional camera frame. Returns a mode decision and a length-appropriate text answer.
 
 **Request body:**
 ```json
@@ -164,72 +114,158 @@ receives a mode decision, text answer, and optional audio URL.
   "state": {
     "crowd": "low",
     "noise": "quiet",
-    "detected": true,
-    "both_holding": false
+    "gaze_duration": 18.5
   }
 }
 ```
 
-- `image_base64`: omit (or pass `null`) to skip exhibit recognition
-- `state`: omit entirely to use safe defaults (`crowd=low`, `noise=quiet`, `both_holding=false`)
+| Field | Type | Notes |
+|---|---|---|
+| `question` | `string` | Visitor's natural-language question |
+| `image_base64` | `string \| null` | Base64 JPEG/PNG from the headset camera; omit to skip exhibit recognition |
+| `state.crowd` | `"low" \| "moderate" \| "crowded"` | Detected by Unity on-device |
+| `state.noise` | `"quiet" \| "moderate" \| "noisy"` | Detected by Unity on-device |
+| `state.gaze_duration` | `float` (seconds) | How long the visitor has been looking at this exhibit |
 
 **Response:**
 ```json
 {
   "mode": "FULL_VOICE",
   "answer": "This wheat field was painted by Vincent van Gogh in 1889...",
-  "audio_url": "/audio/3f2a1c.mp3",
   "exhibit": "Wheat Field with Cypresses"
 }
 ```
+
+| Field | Notes |
+|---|---|
+| `mode` | See mode table below |
+| `answer` | Text answer; empty string for `NO_RESPONSE` |
+| `exhibit` | Recognised exhibit name; empty string if not identified |
 
 **Mode values:**
 
 | `mode` | When | What Unity should do |
 |---|---|---|
-| `FULL_VOICE` | Quiet room, hands free | Display full answer + play audio from `audio_url` |
-| `BRIEF_TEXT` | Noisy / moderate environment | Display short text only (`audio_url` will be `""`) |
-| `XR_MENU` | Both hands occupied | Show XR menu overlay; ignore `answer` and `audio_url` |
-
-**Audio playback:**
-- If `audio_url` is non-empty, fetch `http://<server-ip>:8000<audio_url>` and play it
-- Example full URL: `http://192.168.1.42:8000/audio/3f2a1c.mp3`
+| `NO_RESPONSE` | `gaze_duration < 5s` | Visitor is passing by — do not interrupt |
+| `BRIEF_TEXT` | `5–15s`, low crowd | Display short text (2–3 sentences); play via Meta TTS if desired |
+| `GLANCE_CARD` | `5–15s`, crowded | Show a minimal info card with one key fact |
+| `FULL_VOICE` | `>15s`, low crowd | Display full answer and play immersive audio via Meta TTS |
+| `BRIEF_TEXT_PROMPT` | `>15s`, crowded | Show brief text + nudge visitor toward a quieter spot |
 
 ---
 
-## Three Demo Scenes
+## Context Routing Logic
 
-These scenarios illustrate how the system behaves across different contexts.
+The decision is made in `context_router._decide_mode()`. Priority rules:
 
-### Scene A — Ideal conditions (FULL_VOICE)
+```
+gaze_duration < 5s                     →  NO_RESPONSE        (passing by)
+5s ≤ gaze_duration < 15s, crowded      →  GLANCE_CARD        (minimal card)
+5s ≤ gaze_duration < 15s, low crowd   →  BRIEF_TEXT         (short answer)
+gaze_duration ≥ 15s, crowded           →  BRIEF_TEXT_PROMPT  (brief + quiet nudge)
+gaze_duration ≥ 15s, low crowd        →  FULL_VOICE         (full immersive guide)
+```
+
+**Notes:**
+- `noise` does **not** affect the mode — audio is delivered through earphones, so environment noise is irrelevant.
+- `moderate` crowd is treated the same as `low`.
+- Gaze thresholds are defined as constants in `context_router.py` (`GAZE_THRESHOLD_INTEREST = 5.0`, `GAZE_THRESHOLD_ENGAGED = 15.0`) and can be tuned without touching the logic.
+
+---
+
+## RAG System
+
+### Knowledge base (`exhibits_data.py`)
+
+Each of the six exhibits contains **five structured knowledge sections**, giving the LLM richer material to answer questions from multiple angles:
+
+| Section | Content |
+|---|---|
+| `key_facts` | Dimensions, date, location, one-line identifiers |
+| `visual_description` | Composition, colour palette, what the visitor sees |
+| `historical_context` | Commission, era, events, collector history |
+| `technique` | Medium, brushwork, perspective, methods |
+| `story` | Scandals, surprising facts, legacy, auction records |
+
+### Mode-specific prompts (`rag_engine.py`)
+
+Rather than truncating output after the fact, each mode has a dedicated prompt that instructs the LLM to target the correct length and tone from the start:
+
+| Mode | Prompt instruction | Target length |
+|---|---|---|
+| `GLANCE_CARD` | "Answer in exactly ONE sentence (max 20 words). State only the single most surprising fact." | ~20 words |
+| `BRIEF_TEXT` | "Answer in 2–3 sentences (~50 words). Give the key fact and one interesting detail." | ~50 words |
+| `FULL_VOICE` | "Answer in 4–6 sentences (~120–150 words). Include historical context, a story, and a closing thought." | ~150 words |
+| `BRIEF_TEXT_PROMPT` | "Answer in 2–3 sentences (~50 words). End with a friendly nudge toward a quieter spot." | ~60 words |
+
+### CLI testing
+
+```bash
+# Test a single mode
+python rag_engine.py --query "Why did this painting cause a scandal?" --mode FULL_VOICE
+
+# Rebuild index (required after editing exhibits_data.py)
+python rag_engine.py --build
+
+# Interactive mode — runs all four modes on each question
+python rag_engine.py
+```
+
+---
+
+## Demo Scenarios
+
+These examples show how the system behaves across different visitor contexts.
+
+### Scenario A — Visitor passing by (NO_RESPONSE)
 ```json
 POST /ask
 {
   "question": "Tell me about this painting",
-  "state": { "crowd": "low", "noise": "quiet", "detected": true, "both_holding": false }
+  "state": { "crowd": "low", "noise": "quiet", "gaze_duration": 2.0 }
 }
 ```
-Expected: `mode = "FULL_VOICE"`, full text answer, audio URL populated.
+Expected: `mode = "NO_RESPONSE"`, `answer = ""`
 
-### Scene B — Busy gallery (BRIEF_TEXT)
+### Scenario B — Interested visitor, low crowd (BRIEF_TEXT)
 ```json
 POST /ask
 {
   "question": "Tell me about this painting",
-  "state": { "crowd": "crowded", "noise": "noisy", "detected": false, "both_holding": false }
+  "state": { "crowd": "low", "noise": "noisy", "gaze_duration": 8.0 }
 }
 ```
-Expected: `mode = "BRIEF_TEXT"`, short answer (≤ 160 chars), `audio_url = ""`.
+Expected: `mode = "BRIEF_TEXT"`, 2–3 sentence answer
 
-### Scene C — Accessibility / both hands occupied (XR_MENU)
+### Scenario C — Glancing visitor in a crowd (GLANCE_CARD)
 ```json
 POST /ask
 {
   "question": "Tell me about this painting",
-  "state": { "crowd": "low", "noise": "quiet", "detected": true, "both_holding": true }
+  "state": { "crowd": "crowded", "noise": "quiet", "gaze_duration": 10.0 }
 }
 ```
-Expected: `mode = "XR_MENU"`, `answer = ""`, `audio_url = ""`.
+Expected: `mode = "GLANCE_CARD"`, one-sentence answer
+
+### Scenario D — Deeply engaged, ideal conditions (FULL_VOICE)
+```json
+POST /ask
+{
+  "question": "Tell me about this painting",
+  "state": { "crowd": "low", "noise": "quiet", "gaze_duration": 20.0 }
+}
+```
+Expected: `mode = "FULL_VOICE"`, full 4–6 sentence immersive answer
+
+### Scenario E — Deeply engaged but crowded (BRIEF_TEXT_PROMPT)
+```json
+POST /ask
+{
+  "question": "Tell me about this painting",
+  "state": { "crowd": "crowded", "noise": "noisy", "gaze_duration": 20.0 }
+}
+```
+Expected: `mode = "BRIEF_TEXT_PROMPT"`, brief answer + quiet-spot nudge
 
 ---
 
@@ -239,80 +275,20 @@ Expected: `mode = "XR_MENU"`, `answer = ""`, `audio_url = ""`.
 
 Quest 3 connects over Wi-Fi. The server must run on the **same network** as the headset.
 
-1. Find your computer's local IP:
-   ```bash
-   # macOS
-   ipconfig getifaddr en0
-   # Example output: 192.168.1.42
-   ```
-2. In your Unity scripts, set the base URL to `http://192.168.1.42:8000`  
-   (never use `localhost` — that points to inside the headset)
-
----
-
-### For the Input Layer
-
-Your job: poll `/state` every 500 ms and switch interaction modes accordingly.
-
-| Condition | Switch to |
-|---|---|
-| `hands.both_holding == true` | Eye tracking / head gaze mode (hands are occupied) |
-| `noise.level == "noisy"` | Suppress voice input, use gaze/head only |
-| `noise.level == "moderate"` | Voice input optional |
-| `noise.level == "quiet"` + `both_holding == false` | Full voice input enabled |
-
-```csharp
-// InputLayerController.cs
-using System.Collections;
-using UnityEngine;
-using UnityEngine.Networking;
-
-public class InputLayerController : MonoBehaviour
-{
-    private const string SERVER = "http://192.168.1.42:8000";
-
-    void Start() => StartCoroutine(PollState());
-
-    IEnumerator PollState()
-    {
-        while (true)
-        {
-            using var req = UnityWebRequest.Get($"{SERVER}/state");
-            yield return req.SendWebRequest();
-
-            if (req.result == UnityWebRequest.Result.Success)
-            {
-                var state = JsonUtility.FromJson<StateResponse>(req.downloadHandler.text);
-                UpdateInputMode(state);
-            }
-
-            yield return new WaitForSeconds(0.5f);
-        }
-    }
-
-    void UpdateInputMode(StateResponse state)
-    {
-        if (state.hands.both_holding)
-        {
-            // Switch to eye / head gaze interaction
-        }
-        else if (state.noise.level == "noisy")
-        {
-            // Disable voice, use gaze only
-        }
-        else
-        {
-            // Full voice input
-        }
-    }
-}
+```bash
+# Find your machine's local IP (macOS)
+ipconfig getifaddr en0
+# Example output: 192.168.1.42
 ```
+
+In your Unity scripts, set the base URL to `http://192.168.1.42:8000`.  
+Never use `localhost` — that points inside the headset.
 
 ---
 
 ### For the Experience Layer
 
-Your job: call `/ask` when the visitor asks a question, then update the scene.
+Unity is responsible for measuring `gaze_duration`, `crowd`, and `noise` on-device, then calling `/ask` with those values.
 
 ```csharp
 // ExperienceLayerController.cs
@@ -326,22 +302,23 @@ public class ExperienceLayerController : MonoBehaviour
     private const string SERVER = "http://192.168.1.42:8000";
 
     // Call this when the visitor asks a question
-    public void OnVisitorQuestion(string question, string crowdLevel, string noiseLevel, bool bothHolding)
+    public void OnVisitorQuestion(string question, float gazeDuration,
+                                  string crowdLevel, string noiseLevel)
     {
-        StartCoroutine(AskServer(question, crowdLevel, noiseLevel, bothHolding));
+        StartCoroutine(AskServer(question, gazeDuration, crowdLevel, noiseLevel));
     }
 
-    IEnumerator AskServer(string question, string crowd, string noise, bool bothHolding)
+    IEnumerator AskServer(string question, float gazeDuration,
+                          string crowd, string noise)
     {
         var body = new AskRequest
         {
             question = question,
             state = new AskState
             {
-                crowd = crowd,
-                noise = noise,
-                detected = true,
-                both_holding = bothHolding
+                crowd         = crowd,
+                noise         = noise,
+                gaze_duration = gazeDuration
             }
         };
 
@@ -364,90 +341,77 @@ public class ExperienceLayerController : MonoBehaviour
     {
         switch (resp.mode)
         {
-            case "FULL_VOICE":
-                ShowFullOverlay(resp.answer);
-                if (!string.IsNullOrEmpty(resp.audio_url))
-                    StartCoroutine(PlayAudio($"{SERVER}{resp.audio_url}"));
+            case "NO_RESPONSE":
+                // Do nothing — visitor is passing by
+                break;
+
+            case "GLANCE_CARD":
+                ShowGlanceCard(resp.answer);
                 break;
 
             case "BRIEF_TEXT":
-                ShowBriefText(resp.answer);   // short text only, no audio
+                ShowBriefText(resp.answer);
+                // Optionally speak via Meta TTS
                 break;
 
-            case "XR_MENU":
-                ShowXRMenu();                 // ignore answer and audio
+            case "FULL_VOICE":
+                ShowFullOverlay(resp.answer);
+                // Speak via Meta TTS
+                break;
+
+            case "BRIEF_TEXT_PROMPT":
+                ShowBriefText(resp.answer);   // answer already includes quiet-spot nudge
                 break;
         }
     }
 
-    IEnumerator PlayAudio(string url)
-    {
-        using var req = UnityWebRequestMultimedia.GetAudioClip(url, AudioType.MPEG);
-        yield return req.SendWebRequest();
-
-        if (req.result == UnityWebRequest.Result.Success)
-        {
-            var clip = DownloadHandlerAudioClip.GetContent(req);
-            var source = GetComponent<AudioSource>();
-            source.clip = clip;
-            source.Play();
-        }
-    }
-
-    void ShowFullOverlay(string text) { /* update your UI panel */ }
-    void ShowBriefText(string text)   { /* update your UI panel */ }
-    void ShowXRMenu()                 { /* activate your XR menu GameObject */ }
+    void ShowGlanceCard(string text)  { /* minimal one-line card UI */ }
+    void ShowBriefText(string text)   { /* short text panel */ }
+    void ShowFullOverlay(string text) { /* full immersive overlay */ }
 }
 ```
 
 ---
 
-### Data classes (paste into a separate file `ContextARModels.cs`)
+### Data classes (`ContextARModels.cs`)
 
 ```csharp
-// ContextARModels.cs
 using System;
 
-[Serializable] public class HandState   { public bool detected; public bool both_holding; }
-[Serializable] public class CrowdState  { public int count; public string level; }
-[Serializable] public class NoiseState  { public float db; public string level; }
-[Serializable] public class StateResponse
+[Serializable]
+public class AskState
 {
-    public float     timestamp;
-    public HandState hands;
-    public CrowdState crowd;
-    public NoiseState noise;
-    public string    suggestion;
+    public string crowd;          // "low" | "moderate" | "crowded"
+    public string noise;          // "quiet" | "moderate" | "noisy"
+    public float  gaze_duration;  // seconds
 }
 
-[Serializable] public class AskState   { public string crowd; public string noise; public bool detected; public bool both_holding; }
-[Serializable] public class AskRequest { public string question; public string image_base64; public AskState state; }
-[Serializable] public class AskResponse{ public string mode; public string answer; public string audio_url; public string exhibit; }
+[Serializable]
+public class AskRequest
+{
+    public string   question;
+    public string   image_base64;  // optional — omit to skip exhibit recognition
+    public AskState state;
+}
+
+[Serializable]
+public class AskResponse
+{
+    public string mode;     // NO_RESPONSE | BRIEF_TEXT | GLANCE_CARD | FULL_VOICE | BRIEF_TEXT_PROMPT
+    public string answer;   // empty for NO_RESPONSE
+    public string exhibit;  // recognised exhibit name; empty if not identified
+}
 ```
-
----
-
-## Context Routing Logic
-
-The decision is made in `context_router._decide_mode()`:
-
-```
-both_holding = true  →  XR_MENU     (highest priority, regardless of environment)
-noise = noisy/moderate              →  BRIEF_TEXT
-noise = quiet, hands free           →  FULL_VOICE
-```
-
-`crowd` level does **not** affect the mode — only `noise` and `both_holding` do.
 
 ---
 
 ## Running the Test Suite
 
 ```bash
-# All unit tests (no camera/mic needed, ~5 seconds)
+# All unit tests (no camera needed, ~5 seconds)
 python -m pytest tests/ -v
 
-# Hardware integration tests (requires camera + microphone)
+# Hardware integration tests (requires camera)
 python -m pytest tests/test_hardware.py --hardware -v
 ```
 
@@ -465,6 +429,7 @@ python -m pytest tests/test_hardware.py --hardware -v
 | The Card Players | Paul Cézanne | c. 1890–95 | 61.101.1 |
 
 To add or update exhibits, edit `exhibits_data.py` and rebuild the index:
+
 ```bash
 python rag_engine.py --build
 ```
