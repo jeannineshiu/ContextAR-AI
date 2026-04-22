@@ -27,8 +27,8 @@ _rag: RAGEngine | None = None
 # ---------------------------------------------------------------------------
 
 class AskStateInput(BaseModel):
-    crowd:         str   = "low"   # "low" | "moderate" | "crowded"
-    noise:         str   = "quiet" # "quiet" | "moderate" | "noisy"
+    crowd:         str   = "low"   # "low" | "crowded"
+    noise:         str   = "quiet" # "quiet" | "noisy"
     gaze_duration: float = 0.0     # seconds the visitor has been looking at the exhibit
 
 

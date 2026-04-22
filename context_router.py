@@ -14,7 +14,7 @@ Decision table:
 └───────────────┴──────────┴───────┴────────────────────┘
 
 Note: noise does not affect mode — audio is delivered via earphones.
-"moderate" crowd is treated the same as "low".
+crowd accepts "low" or "crowded"; any other value is treated as "low".
 """
 
 from dataclasses import dataclass
@@ -42,7 +42,7 @@ def _decide_mode(sensor_state: dict) -> tuple[str, str, str | None]:
     Pure function — no side effects.
     """
     gaze_duration = float(sensor_state.get("gaze_duration", 0.0))
-    crowd         = sensor_state.get("crowd", "low")   # "low" | "moderate" | "crowded"
+    crowd         = sensor_state.get("crowd", "low")   # "low" | "crowded"
     is_crowded    = crowd == "crowded"
 
     if gaze_duration < GAZE_THRESHOLD_INTEREST:

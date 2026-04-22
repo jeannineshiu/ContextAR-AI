@@ -123,8 +123,8 @@ Main QA endpoint. Unity sends the visitor's question, current sensor state (meas
 |---|---|---|
 | `question` | `string` | Visitor's natural-language question |
 | `image_base64` | `string \| null` | Base64 JPEG/PNG from the headset camera; omit to skip exhibit recognition |
-| `state.crowd` | `"low" \| "moderate" \| "crowded"` | Detected by Unity on-device |
-| `state.noise` | `"quiet" \| "moderate" \| "noisy"` | Detected by Unity on-device |
+| `state.crowd` | `"low" \| "crowded"` | Detected by Unity on-device |
+| `state.noise` | `"quiet" \| "noisy"` | Detected by Unity on-device; does not affect mode (audio via earphones) |
 | `state.gaze_duration` | `float` (seconds) | How long the visitor has been looking at this exhibit |
 
 **Response:**
