@@ -19,14 +19,6 @@ faiss-cpu==1.13.2
 
 # Computer vision
 opencv-python==4.13.0.92
-mediapipe==0.10.9
-ultralytics==8.4.37
-
-# Audio
-sounddevice==0.5.5
-librosa==0.11.0
-gTTS==2.5.4
-elevenlabs==2.43.0
 
 # Utilities
 numpy==2.2.6
