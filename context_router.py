@@ -93,7 +93,7 @@ def route(question: str, rag: RAGEngine, state: dict) -> RouterDecision:
         return RouterDecision(mode=mode, answer="", xr_action=xr_action, reason=reason)
 
     max_len = FULL_MAX if mode == "FULL_VOICE" else BRIEF_MAX
-    rag_result = rag.query(question, max_length=max_len)
+    rag_result = rag.query(question, mode=mode, max_length=max_len)
 
     return RouterDecision(
         mode=mode,
