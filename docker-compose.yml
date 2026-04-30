@@ -1,0 +1,10 @@
+services:
+  server:
+    build: .
+    ports:
+      - "${PORT:-8000}:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./faiss_index:/app/faiss_index   # pre-built index; no rebuild needed
+    restart: unless-stopped
