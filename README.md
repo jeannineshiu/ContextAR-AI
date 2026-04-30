@@ -24,6 +24,14 @@ XRCC_project/
 ├── exhibit_recognizer.py   # GPT-4o Vision: identify painting from camera frame
 ├── exhibits_data.py        # Museum knowledge base (6 Met paintings, 5 sections each)
 │
+├── data/                   # Exhibit knowledge exported as Markdown (one file per painting)
+│   ├── the_harvesters.md
+│   ├── young_woman_water_pitcher.md
+│   ├── aristotle_with_bust_of_homer.md
+│   ├── madame_x.md
+│   ├── wheat_field_cypresses.md
+│   └── the_card_players.md
+│
 ├── tests/                  # Pytest test suite
 │   ├── test_server.py
 │   ├── test_qa_pipeline.py
@@ -33,8 +41,12 @@ XRCC_project/
 │   ├── test_exhibits_data.py
 │   └── test_hardware.py    # Real camera tests (opt-in)
 │
+├── Dockerfile              # Container image for the FastAPI server
+├── docker-compose.yml      # One-command startup with pre-built FAISS index
 ├── conftest.py             # pytest config (hardware marker)
 ├── requirements.txt
+├── test_request.py         # Mock client — simulates Quest 3 requests without a headset
+├── README_SERVER.md        # Hackathon quick-start guide (3-step setup)
 ├── .env.example            # API key template — copy to .env and fill in
 └── .gitignore
 ```
@@ -47,7 +59,20 @@ XRCC_project/
 
 ## Quick Start
 
-### 1. Clone and create environment
+### Option A — Docker (recommended for reviewers)
+
+```bash
+cp .env.example .env          # fill in your OPENAI_API_KEY
+docker-compose up             # builds image and starts server
+```
+
+Server ready at `http://localhost:8000`. The pre-built FAISS index is mounted directly — no embedding step needed.
+
+---
+
+### Option B — Local Python
+
+#### 1. Clone and create environment
 
 ```bash
 git clone <repo-url>
@@ -58,14 +83,14 @@ conda activate contextar
 pip install -r requirements.txt
 ```
 
-### 2. Set up API keys
+#### 2. Set up API keys
 
 ```bash
 cp .env.example .env
 # Edit .env and fill in your OPENAI_API_KEY
 ```
 
-### 3. Build the FAISS knowledge index (first time only)
+#### 3. Build the FAISS knowledge index (first time only)
 
 ```bash
 python rag_engine.py --build
@@ -74,7 +99,7 @@ python rag_engine.py --build
 This reads `exhibits_data.py`, calls OpenAI Embeddings, and saves the index to `faiss_index/`.  
 Takes ~10 seconds. Must be re-run whenever `exhibits_data.py` is updated.
 
-### 4. Start the server
+#### 4. Start the server
 
 ```bash
 uvicorn server:app --host 0.0.0.0 --port 8000 --reload
@@ -82,6 +107,18 @@ uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 
 The server will be available at `http://localhost:8000`.  
 Unity should connect to `http://<your-machine-ip>:8000`.
+
+---
+
+### Demo without a headset
+
+Once the server is running, simulate all five visitor scenarios from the command line:
+
+```bash
+python test_request.py                         # run all 5 scenarios
+python test_request.py --scenario 4            # FULL_VOICE only
+python test_request.py --url http://192.168.1.42:8000  # remote server
+```
 
 ---
 
@@ -381,8 +418,8 @@ using System;
 [Serializable]
 public class AskState
 {
-    public string crowd;          // "low" | "moderate" | "crowded"
-    public string noise;          // "quiet" | "moderate" | "noisy"
+    public string crowd;          // "low" | "crowded"
+    public string noise;          // "quiet" | "noisy"
     public float  gaze_duration;  // seconds
 }
 
